@@ -4,6 +4,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell, Menu, protocol, net } = requ
 const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('url');
+const { ArgumentParser } = require('argparse');
 const sidecar_1 = require("./sidecar");
 let mainWindow = null;
 let sidecar = null;
@@ -112,10 +113,26 @@ function getPythonPath() {
     return path.join(resourcePath, 'python', binaryName);
 }
 function getPythonArgs() {
+    const args = [];
     if (isDev) {
-        return [path.join(__dirname, '..', 'python', 'main.py'), '--debug'];
+        args.push(path.join(__dirname, '..', 'python', 'main.py'), '--debug');
     }
-    return [];
+    // Parse command-line arguments using argparse
+    const parser = new ArgumentParser({
+        description: 'OpenExtract',
+    });
+    parser.add_argument('--backup', {
+        help: 'Path to backup directory to open immediately on startup',
+        required: false,
+    });
+    const parsedArgs = parser.parse_args();
+    // Debug: log received arguments
+    console.log('[Electron] Received args:', process.argv);
+    console.log('[Electron] Parsed backup path:', parsedArgs.backup);
+    if (parsedArgs.backup) {
+        args.push('--backup', parsedArgs.backup);
+    }
+    return args;
 }
 app.whenReady().then(async () => {
     // Register custom protocol to serve local media files (videos, images)
@@ -137,6 +154,35 @@ app.whenReady().then(async () => {
     sidecar = new sidecar_1.PythonSidecar(getPythonPath(), getPythonArgs(), logPath);
     sidecar.notificationHandler = (notification) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
+            // Handle backup.opened notification from command-line --backup
+            if (notification.method === 'backup.opened') {
+                const params = notification.params;
+                const session = {
+                    id: params.udid,
+                    type: 'device',
+                    udid: params.udid,
+                    deviceName: params.device_name,
+                    productType: params.product_type,
+                    productVersion: params.product_version,
+                    backupDir: params.backup_dir,
+                    encrypted: params.encrypted,
+                    lastBackup: params.last_backup,
+                    lastOpened: new Date().toISOString(),
+                    sizeGB: 0,
+                };
+                // Add to sessions
+                const sessions = store.get('sessions', []);
+                const existing = sessions.findIndex((s) => s.id === session.id);
+                if (existing >= 0) {
+                    sessions[existing] = { ...sessions[existing], ...session };
+                }
+                else {
+                    sessions.unshift(session);
+                }
+                store.set('sessions', sessions.slice(0, 20));
+                console.log('[Electron] Added backup from --backup to sessions:', session);
+            }
+            // Forward all notifications to renderer
             mainWindow.webContents.send('sidecar:notification', notification);
         }
     };

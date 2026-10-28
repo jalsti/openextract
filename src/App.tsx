@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useBackup, type BackupInfo } from './hooks/useBackup';
 import HomeScreen from './components/HomeScreen';
 import ExploreLayout from './components/explore/ExploreLayout';
@@ -37,6 +37,60 @@ export default function App() {
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [unlocking, setUnlocking] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
+
+  // Listen for backup.opened notification from command-line --backup
+  // Also check for already-opened backup on mount (in case notification was sent before React loaded)
+  useEffect(() => {
+    const checkForAutoOpenedBackup = async () => {
+      try {
+        const sessions = await window.openextract.getRecentSessions();
+        // Find the most recently opened backup
+        if (sessions && sessions.length > 0) {
+          const latest = sessions[0];
+          // Check if it was opened very recently (within last 5 seconds)
+          const lastOpened = new Date(latest.lastOpened);
+          const now = new Date();
+          const diffMs = now.getTime() - lastOpened.getTime();
+          if (diffMs < 5000 && latest.type === 'device' && latest.backupDir) {
+            // This was likely opened via --backup, open it in the backup hook and navigate
+            const result = await backup.openBackup(latest.id, undefined, latest.backupDir);
+            if (result.status === 'open' && result.info) {
+              setCurrentSession(latest);
+              setScreen('explore');
+            }
+          }
+        }
+      } catch (e) {
+        console.error('Failed to check for auto-opened backup:', e);
+      }
+    };
+
+    checkForAutoOpenedBackup();
+
+    const unsubscribe = window.openextract.onNotification((notification) => {
+      if (notification.method === 'backup.opened') {
+        const params = notification.params;
+        const session: RecentSession = {
+          id: params.udid,
+          type: 'device',
+          name: params.device_name,
+          subtitle: `iOS ${params.product_version}`,
+          exportCount: 0,
+          lastOpened: new Date().toISOString(),
+          iosVersion: params.product_version,
+          backupDir: params.backup_dir,
+        };
+        // Open the backup in the hook and navigate
+        backup.openBackup(session.id, undefined, session.backupDir).then((result) => {
+          if (result.status === 'open' && result.info) {
+            setCurrentSession(session);
+            setScreen('explore');
+          }
+        });
+      }
+    });
+    return unsubscribe;
+  }, [backup]);
 
   const openAndNavigate = useCallback(async (
     udid: string,

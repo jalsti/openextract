@@ -512,8 +512,17 @@ class SidecarServer:
 
 
 if __name__ == "__main__":
-    import sys
-    if "--debug" in sys.argv:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="OpenExtract")
+    # --debug normally only set by source, but for completeness…
+    parser.add_argument("--debug", action="store_true",
+                        help="Enable debugpy debugger on port 5678")
+    parser.add_argument("--backup", type=str, metavar="PATH",
+                        help="Path to backup directory to open immediately on startup (backup must not have password set for this)", required=False)
+    args = parser.parse_args()
+
+    if args.debug:
         try:
             import debugpy
             debugpy.listen(("0.0.0.0", 5678))
@@ -522,4 +531,46 @@ if __name__ == "__main__":
             print(f'{{"status":"error", "message":"Failed to start debugger: {e}"}}', file=sys.stderr)
 
     server = SidecarServer()
+
+    # Handle --backup parameter to open a backup immediately on startup
+    if args.backup:
+        #print(f'Trying to use backup from "{args.backup}"', file=sys.stderr)
+        try:
+            # List backups from the custom path to get the UDID
+            backups = server.backup_manager.list_backups(custom_path=args.backup)
+            #print(f'list_backups returned: {backups}', file=sys.stderr)
+            if backups and len(backups["backups"]) > 0:
+                udid = backups["backups"][0]["udid"]
+                #print(f'Found UDID: {udid}', file=sys.stderr)
+                # Open the backup
+                result = server.backup_manager.open_backup(udid, backup_dir=args.backup)
+                print(f'Opened backup {udid} from "{args.backup}": {result}', file=sys.stderr)
+
+                # Send notification to Electron so GUI sees this as an opened session
+                if result.get("status") == "open":
+                    info = result.get("info", {})
+                    notification = {
+                        "jsonrpc": "2.0",
+                        "method": "backup.opened",
+                        "params": {
+                            "udid": info.get("udid"),
+                            "device_name": info.get("device_name"),
+                            "product_type": info.get("product_type"),
+                            "product_version": info.get("product_version"),
+                            "backup_dir": info.get("backup_dir"),
+                            "encrypted": info.get("encrypted"),
+                            "last_backup": info.get("last_backup"),
+                        }
+                    }
+                    _rpc_out.write(json.dumps(notification) + "\n")
+                    _rpc_out.flush()
+                    #print(f'Sent backup.opened notification for {udid}', file=sys.stderr)
+            else:
+                #print(f'No backups found at "{args.backup}"', file=sys.stderr)
+                pass
+        except Exception as e:
+            import traceback
+            print(f'Failed to open backup: {e}', file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+
     server.run()

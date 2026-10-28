@@ -3,6 +3,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell, Menu, protocol, net } = requ
 const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('url');
+const { ArgumentParser } = require('argparse');
 import { PythonSidecar } from './sidecar';
 
 let mainWindow: any = null;
@@ -126,10 +127,30 @@ function getPythonPath(): string {
 }
 
 function getPythonArgs(): string[] {
+  const args: string[] = [];
   if (isDev) {
-    return [path.join(__dirname, '..', 'python', 'main.py'), '--debug'];
+    args.push(path.join(__dirname, '..', 'python', 'main.py'), '--debug');
   }
-  return [];
+
+  // Parse command-line arguments using argparse
+  const parser = new ArgumentParser({
+    description: 'OpenExtract',
+  });
+  parser.add_argument('--backup', {
+    help: 'Path to backup directory to open immediately on startup',
+    required: false,
+  });
+  const parsedArgs = parser.parse_args();
+
+  // Debug: log received arguments
+  console.log('[Electron] Received args:', process.argv);
+  console.log('[Electron] Parsed backup path:', parsedArgs.backup);
+
+  if (parsedArgs.backup) {
+    args.push('--backup', parsedArgs.backup);
+  }
+
+  return args;
 }
 
 app.whenReady().then(async () => {
@@ -154,6 +175,34 @@ app.whenReady().then(async () => {
 
   sidecar.notificationHandler = (notification: any) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
+      // Handle backup.opened notification from command-line --backup
+      if (notification.method === 'backup.opened') {
+        const params = notification.params;
+        const session = {
+          id: params.udid,
+          type: 'device',
+          udid: params.udid,
+          deviceName: params.device_name,
+          productType: params.product_type,
+          productVersion: params.product_version,
+          backupDir: params.backup_dir,
+          encrypted: params.encrypted,
+          lastBackup: params.last_backup,
+          lastOpened: new Date().toISOString(),
+          sizeGB: 0,
+        };
+        // Add to sessions
+        const sessions = store.get('sessions', []) as any[];
+        const existing = sessions.findIndex((s: any) => s.id === session.id);
+        if (existing >= 0) {
+          sessions[existing] = { ...sessions[existing], ...session };
+        } else {
+          sessions.unshift(session);
+        }
+        store.set('sessions', sessions.slice(0, 20));
+        console.log('[Electron] Added backup from --backup to sessions:', session);
+      }
+      // Forward all notifications to renderer
       mainWindow.webContents.send('sidecar:notification', notification);
     }
   };
